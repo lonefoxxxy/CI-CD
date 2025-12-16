@@ -1,4 +1,4 @@
-name: CI Pipeline
+name: Advanced CI Pipeline
 
 on:
   push:
@@ -6,11 +6,15 @@ on:
   pull_request:
     branches: [ "main" ]
 
+# Переменные окружения (используются во всех job)
+env:
+  PYTHON_VERSION: "3.11"
+  PYLINT_SCORE_THRESHOLD: "7.0"
+
 jobs:
+  # ================= BUILD =================
   build:
     runs-on: ubuntu-latest
-
-    # Docker-контейнер с Python
     container:
       image: python:3.11
 
@@ -26,12 +30,37 @@ jobs:
       - name: Run application
         run: python app.py
 
-  test:
+  # ================= LINTING (PARALLEL) =================
+  lint:
     runs-on: ubuntu-latest
-    needs: build
-
     container:
       image: python:3.11
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pylint
+
+      - name: Run pylint
+        run: |
+          pylint app.py --exit-zero --output-format=text > pylint-report.txt
+
+      - name: Upload lint report
+        uses: actions/upload-artifact@v4
+        with:
+          name: pylint-report
+          path: pylint-report.txt
+
+  # ================= TEST (PARALLEL) =================
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.11
+    needs: build
 
     steps:
       - name: Checkout repository
@@ -43,4 +72,48 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run tests
-        run: pytest
+        run: |
+          pytest --junitxml=test-report.xml
+
+      - name: Upload test report
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: test-report.xml
+
+  # ================= SECURITY =================
+  security:
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.11
+    needs: build
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Run dependency security check
+        run: |
+          pip-audit -r requirements.txt --format=json > security-report.json
+
+      - name: Upload security report
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-report
+          path: security-report.json
+
+  # ================= SLACK NOTIFICATION =================
+  notify:
+    runs-on: ubuntu-latest
+    needs: [lint, test, security]
+    if: failure()
+
+    steps:
+      - name: Send Slack notification
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data '{"text":"❌ CI/CD pipeline failed in repository '${{ github.repository }}'. Check GitHub Actions for details."}' \
+          ${{ secrets.SLACK_WEBHOOK_URL }}
